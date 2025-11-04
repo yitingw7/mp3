@@ -190,82 +190,156 @@ module.exports = function (router) {
                 newPendingTasks = [];
             }
 
-            // 验证新 pendingTasks 中的所有任务是否存在
-            if (newPendingTasks.length > 0) {
-                Task.find({ _id: { $in: newPendingTasks } }).then(function (tasks) {
-                    if (tasks.length !== newPendingTasks.length) {
-                        return res.status(400).json({
-                            message: "Some tasks in pendingTasks do not exist",
+            // 先获取旧用户数据，以便比较pendingTasks的变化
+            User.findById(req.params.id).then(function (oldUser) {
+                if (!oldUser) {
+                    return res.status(404).json({
+                        message: "User not found",
+                        data: {}
+                    });
+                }
+
+                var oldPendingTasks = oldUser.pendingTasks || [];
+                var oldPendingTasksSet = new Set(oldPendingTasks.map(String));
+                var newPendingTasksSet = new Set(newPendingTasks.map(String));
+
+                // 找出需要移除的任务（旧有但新没有）
+                var tasksToRemove = oldPendingTasks.filter(function (taskId) {
+                    return !newPendingTasksSet.has(String(taskId));
+                });
+
+                // 找出需要添加的任务（新有但旧没有）
+                var tasksToAdd = newPendingTasks.filter(function (taskId) {
+                    return !oldPendingTasksSet.has(String(taskId));
+                });
+
+                // 验证新 pendingTasks 中的所有任务是否存在
+                if (newPendingTasks.length > 0) {
+                    Task.find({ _id: { $in: newPendingTasks } }).then(function (tasks) {
+                        if (tasks.length !== newPendingTasks.length) {
+                            return res.status(400).json({
+                                message: "Some tasks in pendingTasks do not exist",
+                                data: {}
+                            });
+                        }
+
+                        // 更新用户
+                        return User.findByIdAndUpdate(
+                            req.params.id,
+                            {
+                                name: req.body.name,
+                                email: req.body.email,
+                                pendingTasks: newPendingTasks,
+                                dateCreated: req.body.dateCreated || Date.now()
+                            },
+                            { new: true, runValidators: true }
+                        ).then(function (user) {
+                            if (!user) {
+                                return res.status(404).json({
+                                    message: "User not found",
+                                    data: {}
+                                });
+                            }
+
+                            // 更新双向引用：移除任务的assignedUser
+                            if (tasksToRemove.length > 0) {
+                                Task.updateMany(
+                                    { _id: { $in: tasksToRemove } },
+                                    {
+                                        assignedUser: "",
+                                        assignedUserName: "unassigned"
+                                    }
+                                ).catch(function (err) {
+                                    console.error('Error updating removed tasks:', err);
+                                });
+                            }
+
+                            // 更新双向引用：添加任务的assignedUser
+                            if (tasksToAdd.length > 0) {
+                                // 只更新未完成的任务
+                                Task.updateMany(
+                                    {
+                                        _id: { $in: tasksToAdd },
+                                        completed: false
+                                    },
+                                    {
+                                        assignedUser: user._id.toString(),
+                                        assignedUserName: user.name
+                                    }
+                                ).catch(function (err) {
+                                    console.error('Error updating added tasks:', err);
+                                });
+                            }
+
+                            res.status(200).json({
+                                message: "User updated successfully",
+                                data: user
+                            });
+                        });
+                    }).catch(function (err) {
+                        console.error('Error updating user:', err);
+                        var errorMessage = "Error updating user";
+                        if (err.code === 11000) {
+                            errorMessage = "Email already exists";
+                        }
+                        res.status(400).json({
+                            message: errorMessage + ": " + (err.message || ""),
                             data: {}
                         });
-                    }
-
-                    // 更新用户
-                    return User.findByIdAndUpdate(
+                    });
+                } else {
+                    // 如果没有 pendingTasks，直接更新
+                    User.findByIdAndUpdate(
                         req.params.id,
                         {
                             name: req.body.name,
                             email: req.body.email,
-                            pendingTasks: newPendingTasks,
+                            pendingTasks: [],
                             dateCreated: req.body.dateCreated || Date.now()
                         },
                         { new: true, runValidators: true }
-                    );
-                }).then(function (user) {
-                    if (!user) {
-                        return res.status(404).json({
-                            message: "User not found",
+                    ).then(function (user) {
+                        if (!user) {
+                            return res.status(404).json({
+                                message: "User not found",
+                                data: {}
+                            });
+                        }
+
+                        // 更新双向引用：清空所有旧任务的assignedUser
+                        if (oldPendingTasks.length > 0) {
+                            Task.updateMany(
+                                { _id: { $in: oldPendingTasks } },
+                                {
+                                    assignedUser: "",
+                                    assignedUserName: "unassigned"
+                                }
+                            ).catch(function (err) {
+                                console.error('Error updating removed tasks:', err);
+                            });
+                        }
+
+                        res.status(200).json({
+                            message: "User updated successfully",
+                            data: user
+                        });
+                    }).catch(function (err) {
+                        var errorMessage = "Error updating user";
+                        if (err.code === 11000) {
+                            errorMessage = "Email already exists";
+                        }
+                        res.status(400).json({
+                            message: errorMessage,
                             data: {}
                         });
-                    }
-                    res.status(200).json({
-                        message: "User updated successfully",
-                        data: user
                     });
-                }).catch(function (err) {
-                    console.error('Error updating user:', err);
-                    var errorMessage = "Error updating user";
-                    if (err.code === 11000) {
-                        errorMessage = "Email already exists";
-                    }
-                    res.status(400).json({
-                        message: errorMessage + ": " + (err.message || ""),
-                        data: {}
-                    });
+                }
+            }).catch(function (err) {
+                res.status(404).json({
+                    message: "User not found",
+                    data: {}
                 });
-            } else {
-                // 如果没有 pendingTasks，直接更新
-                User.findByIdAndUpdate(
-                    req.params.id,
-                    {
-                        name: req.body.name,
-                        email: req.body.email,
-                        pendingTasks: [],
-                        dateCreated: req.body.dateCreated || Date.now()
-                    },
-                    { new: true, runValidators: true }
-                ).then(function (user) {
-                    if (!user) {
-                        return res.status(404).json({
-                            message: "User not found",
-                            data: {}
-                        });
-                    }
-                    res.status(200).json({
-                        message: "User updated successfully",
-                        data: user
-                    });
-                }).catch(function (err) {
-                    var errorMessage = "Error updating user";
-                    if (err.code === 11000) {
-                        errorMessage = "Email already exists";
-                    }
-                    res.status(400).json({
-                        message: errorMessage,
-                        data: {}
-                    });
-                });
-            }
+            });
         })
 
         // DELETE /api/users/:id - 删除用户
