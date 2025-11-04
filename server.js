@@ -13,8 +13,14 @@ var app = express();
 // Use environment defined port or 3000
 var port = process.env.PORT || 3000;
 
-// Connect to a MongoDB --> Uncomment this once you have a connection string!!
-//mongoose.connect(process.env.MONGODB_URI,  { useNewUrlParser: true });
+// Connect to a MongoDB
+mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true })
+    .then(() => {
+        console.log('MongoDB connected successfully');
+    })
+    .catch((err) => {
+        console.error('MongoDB connection error:', err);
+    });
 
 // Allow CORS so that backend and frontend could be put on different servers
 var allowCrossDomain = function (req, res, next) {
@@ -33,6 +39,25 @@ app.use(bodyParser.json());
 
 // Use routes as a module (see index.js)
 require('./routes')(app, router);
+
+// Global error handler - 捕获未处理的错误
+app.use(function (err, req, res, next) {
+    console.error('Unhandled error:', err);
+    res.status(500).json({
+        message: "Internal server error: " + (err.message || "Unknown error"),
+        data: {}
+    });
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', function (err) {
+    console.error('Uncaught Exception:', err);
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', function (reason, promise) {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 // Start the server
 app.listen(port);
